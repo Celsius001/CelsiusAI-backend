@@ -1,5 +1,8 @@
 import { kv } from '@vercel/kv';
 import cors from 'cors';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 function runMiddleware(req, res, fn) {
     return new Promise((resolve, reject) => {
@@ -50,54 +53,42 @@ export default async function handler(req, res) {
     } catch (error) {
         return res.status(500).json({ error: 'Internal server error' });
     }
-
-    const apiUrl = 'https://nocturne.lol/api/ai';
-    const apiKey = process.env.NOCTURNE_API_KEY;
     
     let finalPrompt = prompt;
     if (!finalPrompt && messages) {
         finalPrompt = messages.map(m => `${m.role}: ${m.content}`).join('\n');
     }
 
-    const requestBody = {
-        model: model, 
-        prompt: finalPrompt,
-        stream: stream || false
-    };
-
     try {
-        const response = await fetch(apiUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`
-            },
-            body: JSON.stringify(requestBody)
-        });
+        const aiModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
         if (stream) {
             res.setHeader('Content-Type', 'text/event-stream');
             res.setHeader('Cache-Control', 'no-cache');
             res.setHeader('Connection', 'keep-alive');
             
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            
-            while (true) {
-                const { value, done } = await reader.read();
-                if (done) break;
-                res.write(decoder.decode(value));
+            const result = await aiModel.generateContentStream(finalPrompt);
+
+            for await (const chunk of result.stream) {
+                const text = chunk.text();
+                if (text) {
+                    res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
+                }
             }
+            
+            res.write(`data: [DONE]\n\n`);
             return res.end();
         } else {
-            const data = await response.json();
-            if (!response.ok) {
-                throw new Error(data.error?.message || 'Failed to fetch');
-            }
-            return res.status(200).json(data);
+            const result = await aiModel.generateContent(finalPrompt);
+            return res.status(200).json({ text: result.response.text() });
         }
 
     } catch (error) {
-        return res.status(500).json({ error: 'Error communicating with AI service' });
+        if (!res.headersSent) {
+            return res.status(500).json({ error: 'Error communicating with AI service' });
+        } else {
+            res.write(`data: ${JSON.stringify({ type: 'error', text: '\n[Stream interrupted due to server error]' })}\n\n`);
+            return res.end();
+        }
     }
 }
