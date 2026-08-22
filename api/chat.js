@@ -1,8 +1,5 @@
 import { kv } from '@vercel/kv';
 import cors from 'cors';
-import { GoogleGenerativeAI } from '@google/generative-ai';
-
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 function runMiddleware(req, res, fn) {
     return new Promise((resolve, reject) => {
@@ -29,7 +26,12 @@ export default async function handler(req, res) {
         return res.status(405).json({ error: 'Method not allowed' });
     }
 
-    const { model, prompt, messages, stream, userId } = req.body;
+    const { prompt, messages, userId } = req.body;
+    const apiKey = process.env.GEMINI_API_KEY;
+
+    if (!apiKey) {
+        return res.status(500).json({ error: 'Missing API Key' });
+    }
 
     if (!userId) {
         return res.status(400).json({ error: 'User ID is required' });
@@ -59,36 +61,34 @@ export default async function handler(req, res) {
         finalPrompt = messages.map(m => `${m.role}: ${m.content}`).join('\n');
     }
 
+    if (!finalPrompt) {
+        return res.status(400).json({ error: 'Missing prompt in request body' });
+    }
+
     try {
-        const aiModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
-        if (stream) {
-            res.setHeader('Content-Type', 'text/event-stream');
-            res.setHeader('Cache-Control', 'no-cache');
-            res.setHeader('Connection', 'keep-alive');
-            
-            const result = await aiModel.generateContentStream(finalPrompt);
-
-            for await (const chunk of result.stream) {
-                const text = chunk.text();
-                if (text) {
-                    res.write(`data: ${JSON.stringify({ type: 'delta', text })}\n\n`);
-                }
+        const response = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent?key=${apiKey}`,
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    contents: [{ parts: [{ text: finalPrompt }] }]
+                })
             }
-            
-            res.write(`data: [DONE]\n\n`);
-            return res.end();
-        } else {
-            const result = await aiModel.generateContent(finalPrompt);
-            return res.status(200).json({ text: result.response.text() });
+        );
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            return res.status(response.status).json({ error: data.error?.message || 'API Error' });
         }
+
+        const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response generated.';
+        return res.status(200).json({ reply });
 
     } catch (error) {
-        if (!res.headersSent) {
-            return res.status(500).json({ error: 'Error communicating with AI service' });
-        } else {
-            res.write(`data: ${JSON.stringify({ type: 'error', text: '\n[Stream interrupted due to server error]' })}\n\n`);
-            return res.end();
-        }
+        return res.status(500).json({ error: 'Error communicating with AI service' });
     }
 }
