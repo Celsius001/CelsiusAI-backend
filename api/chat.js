@@ -12,7 +12,7 @@ function runMiddleware(req, res, fn) {
 
 const corsMiddleware = cors({
     methods: ['POST', 'OPTIONS'],
-    origin: '*' 
+    origin: '*'
 });
 
 export default async function handler(req, res) {
@@ -37,25 +37,25 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: 'User ID is required' });
     }
 
-    const today = new Date().toISOString().split('T')[0]; 
+    const today = new Date().toISOString().split('T')[0];
     const rateLimitKey = `rate_limit:${userId}:${today}`;
-    
+
     try {
         const currentUsage = await kv.incr(rateLimitKey);
-        
+
         if (currentUsage === 1) {
-            await kv.expire(rateLimitKey, 86400); 
+            await kv.expire(rateLimitKey, 86400);
         }
 
         if (currentUsage > 60) {
-            return res.status(429).json({ 
-                error: 'Daily limit reached.' 
+            return res.status(429).json({
+                error: 'Daily limit reached.'
             });
         }
     } catch (error) {
-        return res.status(500).json({ error: 'Internal server error' });
+        console.error('Rate limit service unavailable:', error);
     }
-    
+
     let finalPrompt = prompt;
     if (!finalPrompt && messages) {
         finalPrompt = messages.map(m => `${m.role}: ${m.content}`).join('\n');
@@ -89,6 +89,7 @@ export default async function handler(req, res) {
         return res.status(200).json({ reply });
 
     } catch (error) {
+        console.error('AI service error:', error);
         return res.status(500).json({ error: 'Error communicating with AI service' });
     }
 }
